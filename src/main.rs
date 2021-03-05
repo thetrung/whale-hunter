@@ -6,9 +6,10 @@ use std::{thread, time};
 use colored::*;
 use configparser::ini::Ini;
 
-use binance::{api::*, model::SymbolPrice};
+use binance::{api::*, model::Prices};
 use binance::market::*;
 use binance::account::*;
+
 
 fn main() {
 
@@ -22,6 +23,25 @@ fn main() {
             let market: Market = Binance::new(api_key, secret_key);
             
             // buy_symbol_with_btc(market, account);
+
+            // Latest price for ALL symbols
+            match market.get_all_prices() {
+                Ok(answer) => {
+                    match answer {
+                        // need to match the exact enum
+                        Prices::AllPrices(data) => {
+                            println!("Total of {} symbols.", data.len());
+                            for item in data {
+                                println!("sym {:<16} {:.2}", &item.symbol, &item.price);
+                                //
+                                // Filter stuffs here
+                                //
+                            }
+                        }
+                    }
+                },
+                Err(e) => println!("Error: {}", e),
+            }
 
             let symbols = vec!["SANDUSDT", "SFPUSDT", "FIROUSDT", "DODOUSDT"];
             
