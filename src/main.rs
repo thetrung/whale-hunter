@@ -1,15 +1,34 @@
 extern crate binance;
 
-// use std::borrow::Borrow;
-use std::{thread, time};
+use std::{borrow::Borrow, thread, time};
 
 use colored::*;
 use configparser::ini::Ini;
 
-use binance::{api::*, model::Prices};
+use binance::{api::*, futures::model::Symbol, model::{Prices, SymbolPrice}};
 use binance::market::*;
 use binance::account::*;
 
+struct Hunter {
+    symbol: String,
+    is_riding: bool,
+    heart_beat: i32, // ms
+    gain: f64,       // %
+    gain_min: f64,   // %
+    gain_max: f64,   // %
+}
+
+struct Config {
+    // keys
+    api_key: String,
+    secret_key: String,
+    // thread interval
+    init_heart_beat: i32,
+    // bot config
+    fix_gain_step: f64,
+    init_gain_min: f64,
+    init_gain_max: f64
+}
 
 fn main() {
 
@@ -17,39 +36,29 @@ fn main() {
     let map = config.load("config.toml");
     match map {
         Ok(_) => {
-            let api_key = Some(config.get("keys", "api_key").unwrap().into());
             let secret_key = Some(config.get("keys", "secret_key").unwrap().into());
+            let api_key = Some(config.get("keys", "api_key").unwrap().into());
             // let account: Account = Binance::new(api_key.clone(), secret_key.clone());
             let market: Market = Binance::new(api_key, secret_key);
-            
-            // buy_symbol_with_btc(market, account);
+        
+            // caching to extend live of data
+            let mut data_cache: Vec<SymbolPrice> = vec![];
+            let symbols = symbol_scan(&market, &mut data_cache);
 
-            // Latest price for ALL symbols
-            match market.get_all_prices() {
-                Ok(answer) => {
-                    match answer {
-                        // need to match the exact enum
-                        Prices::AllPrices(data) => {
-                            println!("Total of {} symbols.", data.len());
-                            for item in data {
-                                println!("sym {:<16} {:.2}", &item.symbol, &item.price);
-                                //
-                                // Filter stuffs here
-                                //
-                            }
-                        }
-                    }
-                },
-                Err(e) => println!("Error: {}", e),
-            }
-
-            let symbols = vec!["SANDUSDT", "SFPUSDT", "FIROUSDT", "DODOUSDT"];
+            // Test 
+            // let symbols = vec!["SFPUSDT", "DODOUSDT", "FIROUSDT", "SANDUSDT", "PERLUSDT"]; // no gas
             
             let mut epoch = 0;
             // let now = time::Instant::now();
             let one_second = time::Duration::from_millis(2000);
             loop {
-                whale_scan(&market, &symbols, epoch);
+                println!("{}",format!("\n---------------[ EPOCH #{} ]----------------\n", epoch).yellow());   
+                //
+                // Loop through all symbols
+                //
+                for symbol in &symbols {
+                    whale_scan(&market, &symbol);
+                }
                 thread::sleep(one_second);
                 epoch += 1; // increase
             }
@@ -58,35 +67,72 @@ fn main() {
     }
 }
 
-fn whale_scan(market: &Market, symbols: &Vec<&str>, epoch: i32)
+// 'a is to fix the damn "named lifetime parameter" to indicate same data flow
+fn symbol_scan<'a>(market: &Market, data_cache: &'a mut Vec<SymbolPrice>) -> Vec<&'a str> {
+
+    let mut symbols:Vec<&str> = vec![]; // init
+    let symbols_except = vec![   
+        "USDSUSDT",
+        "USDCUSDT",      
+        "USDSBUSDT",
+    ];
+    // get a list of USDT pairs
+    // symbol_scan(&market, &symbols_except, &mut symbols, &mut data_cache);
+
+    // 
+    // fetching all symbols on Binance..
+    match market.get_all_prices() {
+        Ok(answer) => {
+
+            match answer {
+                // need to match the exact enum
+                Prices::AllPrices(data) => {
+                    // caching
+                    *data_cache = data.clone();
+
+                    for item in data_cache {
+                        //
+                        // Filter stuffs here
+                        let i = item.symbol.as_str();
+                        if i.ends_with("USDT") && !symbols_except.contains(&i) { symbols.push(i); }
+                    }
+                }
+            }
+        },
+        Err(e) => println!("Error with data_cache = {:2}\n{:1}", e, &data_cache.len()),
+    }
+    &symbols.sort();
+    for symbol in symbols.clone() { 
+        println!("sym {:<16}", &symbol); 
+    }
+    println!("Total of {} symbols.", symbols.len());
+
+    return symbols;
+}
+
+fn whale_scan(market: &Market, symbol:&str)
 {
-    println!("{}",format!("\n---------------[ EPOCH #{} ]----------------\n", epoch).yellow());   
-    //
-    // Loop through all symbols
-    //
-    for symbol in symbols {
-        // begin
-        match &market.get_average_price(*symbol) {
-            Ok(answer) => { 
-                //
-                // indicate we are riding whale or not 
-                let mut is_whale_riding = false;
-                //
-                // Check Average price first
-                let _average = answer.price;
-                //
-                // compute diff
-                let _diff = compute_change(&market, symbol, _average);
-                //
-                // processing "changes" when we already know it's "Rise" of "Fall"
-                //
-                decision_making(_diff,  &mut is_whale_riding, symbol);
-                //
-                // end line
-                println!();
-            },
-            Err(e) => println!("Error: {}", e),
-        }
+    // begin
+    match &market.get_average_price(symbol) {
+        Ok(answer) => { 
+            //
+            // indicate we are riding whale or not 
+            let mut is_whale_riding = false;
+            //
+            // Check Average price first
+            let _average = answer.price;
+            //
+            // compute diff
+            let _diff = compute_change(&market, &symbol, _average);
+            //
+            // processing "changes" when we already know it's "Rise" of "Fall"
+            //
+            decision_making(_diff,  &mut is_whale_riding, &symbol);
+            //
+            // end line
+            println!();
+        },
+        Err(e) => println!("Error: {}", e),
     }
 }
 
