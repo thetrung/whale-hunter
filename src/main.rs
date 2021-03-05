@@ -1,11 +1,11 @@
 extern crate binance;
 
-use std::{borrow::Borrow, thread, time};
+use std::{thread::{self, JoinHandle}, time};
 
 use colored::*;
 use configparser::ini::Ini;
 
-use binance::{api::*, futures::model::Symbol, model::{Prices, SymbolPrice}};
+use binance::{api::*, model::{Prices, SymbolPrice}};
 use binance::market::*;
 use binance::account::*;
 
@@ -30,41 +30,49 @@ struct Config {
     init_gain_max: f64
 }
 
+const one_second: time::Duration = time::Duration::from_millis(1000);
+const two_second: time::Duration = time::Duration::from_millis(2500);
+
 fn main() {
-
+    // caching to extend live of data
+    let mut data_cache: Vec<SymbolPrice> = vec![];
     let mut config = Ini::new();
-    let map = config.load("config.toml");
-    match map {
-        Ok(_) => {
-            let secret_key = Some(config.get("keys", "secret_key").unwrap().into());
-            let api_key = Some(config.get("keys", "api_key").unwrap().into());
-            // let account: Account = Binance::new(api_key.clone(), secret_key.clone());
-            let market: Market = Binance::new(api_key, secret_key);
-        
-            // caching to extend live of data
-            let mut data_cache: Vec<SymbolPrice> = vec![];
-            let symbols = symbol_scan(&market, &mut data_cache);
+    config.load("config.toml");
+    let market = get_market(&mut config);
+    let symbols = symbol_scan(&market, &mut data_cache);
 
-            // Test 
-            // let symbols = vec!["SFPUSDT", "DODOUSDT", "FIROUSDT", "SANDUSDT", "PERLUSDT"]; // no gas
-            
-            let mut epoch = 0;
-            // let now = time::Instant::now();
-            let one_second = time::Duration::from_millis(2000);
-            loop {
-                println!("{}",format!("\n---------------[ EPOCH #{} ]----------------\n", epoch).yellow());   
-                //
-                // Loop through all symbols
-                //
-                for symbol in &symbols {
-                    whale_scan(&market, &symbol);
-                }
-                thread::sleep(one_second);
-                epoch += 1; // increase
-            }
-        },
-        Err(_) => println!("{}","can't load config file.".red())
+    // Test 
+    // let symbols = vec![
+    //     "SFPUSDT", 
+    //     "DODOUSDT", 
+    //     "FIROUSDT", 
+    //     "SANDUSDT", 
+    //     "PERLUSDT"
+    //     ]; // no gas
+    
+    let mut hunter_pool:Vec<JoinHandle<()>> = vec![];
+
+    for symbol in symbols {
+        thread::sleep(one_second);
+        let sym_str = String::from(symbol);
+        let thread = thread::spawn(|| { whale_scan( sym_str); });
+        hunter_pool.push(thread);
     }
+
+    //
+    // later, we may use signal to trigger this
+    //
+    println!("> Last Block before joining all threads.. <");
+
+    //
+    // Joining all
+    //
+    for hunter in hunter_pool{
+        hunter.join().unwrap(); 
+    }
+
+    // ending
+    println!("Ended all threads.");
 }
 
 // 'a is to fix the damn "named lifetime parameter" to indicate same data flow
@@ -74,12 +82,9 @@ fn symbol_scan<'a>(market: &Market, data_cache: &'a mut Vec<SymbolPrice>) -> Vec
     let symbols_except = vec![   
         "USDSUSDT",
         "USDCUSDT",      
-        "USDSBUSDT",
+        "USDSBUSDT"
     ];
-    // get a list of USDT pairs
-    // symbol_scan(&market, &symbols_except, &mut symbols, &mut data_cache);
 
-    // 
     // fetching all symbols on Binance..
     match market.get_all_prices() {
         Ok(answer) => {
@@ -110,29 +115,61 @@ fn symbol_scan<'a>(market: &Market, data_cache: &'a mut Vec<SymbolPrice>) -> Vec
     return symbols;
 }
 
-fn whale_scan(market: &Market, symbol:&str)
-{
-    // begin
-    match &market.get_average_price(symbol) {
-        Ok(answer) => { 
-            //
-            // indicate we are riding whale or not 
-            let mut is_whale_riding = false;
-            //
-            // Check Average price first
-            let _average = answer.price;
-            //
-            // compute diff
-            let _diff = compute_change(&market, &symbol, _average);
-            //
-            // processing "changes" when we already know it's "Rise" of "Fall"
-            //
-            decision_making(_diff,  &mut is_whale_riding, &symbol);
-            //
-            // end line
-            println!();
+fn get_str<'a>(config: &mut Ini, key: &str) -> Option<String> {
+    let conf = Some(config.get("keys", key).unwrap());
+    return conf;
+}
+fn get_market(config: &mut Ini) -> Market {
+    let secret_key = get_str(config, "secret_key");
+    let api_key = get_str(config, "api_key");
+    let market: Market = Binance::new(api_key, secret_key);
+    return market;
+}
+
+fn whale_scan(symbol: String)
+{            
+    // fixed stuffs
+    let mut epoch = 0;
+    let _symbol = symbol.as_str();
+    // config file loading
+    let mut config = Ini::new();
+    let map = config.load("config.toml");
+    match map {
+        Ok(_) => {
+            // let account: Account = Binance::new(api_key.clone(), secret_key.clone());
+            let market = get_market(&mut config);
+            loop {
+                //
+                // begin
+                match &market.get_average_price(_symbol) {
+                    Ok(answer) => { 
+                        // increase cycle 
+                        epoch += 1; 
+                        //
+                        // indicate we are riding whale or not 
+                        let mut is_whale_riding = false;
+                        //
+                        // Check Average price first
+                        let _average = answer.price;
+                        //
+                        // compute diff
+                        let _diff = compute_change(&market, &_symbol, _average, epoch);
+                        //
+                        // processing "changes" when we already know it's "Rise" of "Fall"
+                        //
+                        decision_making(_diff,  &mut is_whale_riding, &_symbol);
+                        //
+                        // end line
+                        println!();
+                    },
+                    Err(e) => println!("Error: {}", e),
+                }
+
+                // let now = time::Instant::now();
+                thread::sleep(two_second);
+            }
         },
-        Err(e) => println!("Error: {}", e),
+        Err(_) => println!("{}","can't load config file.".red())
     }
 }
 
@@ -191,7 +228,7 @@ where S: Into<String>
     println!("\n");
 }
 
-fn compute_change(market: &Market, symbol: &&str, average:f64) -> f64
+fn compute_change(market: &Market, symbol: &&str, average:f64, epoch: i32) -> f64
 {
     //
     // Compare to latest price 
@@ -206,7 +243,7 @@ fn compute_change(market: &Market, symbol: &&str, average:f64) -> f64
             let _changes = answer.price / average;
             _diff = (_changes-1.0) * 100.0;
             // log
-            let log = format!("{:<10}: average = {:.2} | {}: {:.2}%", symbol, average, detect_changes(_changes), _diff);
+            let log = format!("[epoch #{}]: {:<10}: average = {:.2} | {}: {:.2}%", epoch, symbol, average, detect_changes(_changes), _diff);
             print!("{}", if _diff > 0.0 {log.green()} else {log.red()});
         },
         Err(e) => println!("Error: {}", e),
