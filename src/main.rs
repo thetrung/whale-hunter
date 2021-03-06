@@ -1,6 +1,6 @@
 extern crate binance;
 
-use std::{thread::{self, JoinHandle}, time};
+use std::{collections::HashMap, thread::{self, JoinHandle}, time};
 
 use colored::*;
 use configparser::ini::Ini;
@@ -78,14 +78,19 @@ fn main() {
 // 'a is to fix the damn "named lifetime parameter" to indicate same data flow
 fn symbol_scan<'a>(market: &Market, data_cache: &'a mut Vec<SymbolPrice>) -> Vec<&'a str> {
 
+    // TODO: use
+    let mut symmap:HashMap<&str,f64> = HashMap::new();
+    let mut symbols_BTC:Vec<&str> = vec![];
     let mut symbols:Vec<&str> = vec![]; // init
     let symbols_except = vec![   
         "USDSUSDT",
         "USDCUSDT",      
         "USDSBUSDT"
     ];
-
-    // fetching all symbols on Binance..
+    //
+    // Fetching all prices of symbols on Binance..
+    // may call this once per second, and calculate average ourselves.
+    //
     match market.get_all_prices() {
         Ok(answer) => {
 
@@ -94,23 +99,46 @@ fn symbol_scan<'a>(market: &Market, data_cache: &'a mut Vec<SymbolPrice>) -> Vec
                 Prices::AllPrices(data) => {
                     // caching
                     *data_cache = data.clone();
-
+                    
                     for item in data_cache {
                         //
                         // Filter stuffs here
+                        // TODO: use HashMap to add also prices
                         let i = item.symbol.as_str();
                         if i.ends_with("USDT") && !symbols_except.contains(&i) { symbols.push(i); }
+                        if i.ends_with("BTC") { symbols_BTC.push(i); }
                     }
                 }
             }
         },
         Err(e) => println!("Error with data_cache = {:2}\n{:1}", e, &data_cache.len()),
     }
+
     &symbols.sort();
     for symbol in symbols.clone() { 
         println!("sym {:<16}", &symbol); 
     }
-    println!("Total of {} symbols.", symbols.len());
+    println!("Total USDT symbols is {}\n", symbols.len());
+    //
+    // TODO:
+    // Merge this filter into above loop, after got all prices,
+    // we may later call this a lot instead of each symbol thread 
+    // calling its own average_price and current_price.
+    //
+    for symbol in &symbols {
+        let i = &symbol[0..(symbol.len()-4)];
+        //
+        // excluding leverage symbols & pairs without BTC
+        //
+        if !&i.contains("UP") && !&i.contains("DOWN") {
+            let possible_sym = i.to_owned() + "BTC";
+            if symbols_BTC.contains(&possible_sym.as_str()) {
+                symmap.insert(&symbol, 0.0);
+                println!("i = {}", &symbol);
+            }
+        }
+    }
+    println!("Total BTC pairs is {}\n", &symmap.len());
 
     return symbols;
 }
@@ -140,7 +168,8 @@ fn whale_scan(symbol: String)
             let market = get_market(&mut config);
             loop {
                 //
-                // begin
+                // TODO: Replace with main thread average prices
+                //
                 match &market.get_average_price(_symbol) {
                     Ok(answer) => { 
                         // increase cycle 
